@@ -185,7 +185,7 @@ class _MushroomClassifierState extends State<MushroomClassifier> {
         
               Text(
                 _result,
-                style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+                style: const TextStyle( color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold),
                 textAlign: TextAlign.center,
               ),
         
