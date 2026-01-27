@@ -1,7 +1,10 @@
 import 'dart:io';
+import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:tflite_flutter/tflite_flutter.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:image/image.dart' as img;
 
 
 void main(){
@@ -14,20 +17,21 @@ class MushroomApp extends StatelessWidget {
   @override
   Widget build(BuildContext context){
     return MaterialApp(
-      home: const MushroomInitializer(),
+      home: const MushroomClassifier(),
       theme: ThemeData(primaryColor: Colors.green),
+      debugShowCheckedModeBanner: false,
     );
   }
 }
 
-class MushroomInitializer extends StatefulWidget {
-  const MushroomInitializer({ Key? key }) : super(key: key);
+class MushroomClassifier extends StatefulWidget {
+  const MushroomClassifier({ Key? key }) : super(key: key);
 
   @override
-  _MushroomInitializerState createState() => _MushroomInitializerState();
+  _MushroomClassifierState createState() => _MushroomClassifierState();
 }
 
-class _MushroomInitializerState extends State<MushroomInitializer> {
+class _MushroomClassifierState extends State<MushroomClassifier> {
 
   //defining interpreter variable which holds the model
   //before loads model is null
@@ -37,8 +41,14 @@ class _MushroomInitializerState extends State<MushroomInitializer> {
   //nullable before loads
   List<String>? _labels;
 
-  //defining status to keep track of the process
-  String _status = 'Initializing Model';
+  //defining image file to store uploading image
+  //nullable until image is selected
+  File? _image;
+
+  String _result = "Select an image";
+  bool _isAnalysing = false;
+
+  static const int inputSize = 224;
 
   void initState() {
     super.initState();
@@ -55,15 +65,8 @@ class _MushroomInitializerState extends State<MushroomInitializer> {
       _interpreter = await Interpreter.fromAsset(
         'assets/mushroom_model.tflite'
       );
-
-      setState(() {
-        _status = 'Model Loaded Successfully';
-      });
-
     } catch (e) {
-      setState(() {
-        _status = 'Error loading model: $e';
-      });
+        print("Error loading model: $e");
     }
   } 
 
@@ -76,19 +79,106 @@ class _MushroomInitializerState extends State<MushroomInitializer> {
         _labels = labelData.split('\n').where((s) => s.isNotEmpty).toList();
       });
 
+    } catch (e) {
       setState(() {
-        _status = "System Ready\n\n"
-        "Input shape: ${_interpreter!.getInputTensor(0).shape}\n"
-        "Output shape: ${_interpreter!.getOutputTensor(0).shape}\n"
-        "labels: ${_labels!.length}";
+        print("Error loading labels: $e");
+      });
+    }
+  }
+
+  Future<void> _pickImage(ImageSource source) async {
+    final picker = ImagePicker();
+    final pickedFile = await picker.pickImage(source: source);
+
+    if(pickedFile != null) {
+      setState(() {
+        _image = File(pickedFile.path);
+        _result = "Analysing...";
+      });
+
+      _analyseImage(File(pickedFile.path));
+
+    }
+  }
+
+  Future<void> _analyseImage(File imageFile) async {
+    if(_interpreter ==null || _labels == null) {
+      setState(() {
+        _result = "Model or labels not loaded";
+      });
+    }
+
+    setState(() {
+      _isAnalysing = true;
+    });
+
+    try {
+      //decoding the image
+      final imageData = await imageFile.readAsBytes();
+      final image = img.decodeImage(imageData);
+      if(image == null) return;
+
+      //shrinking image to 224 x 224
+      final resizedImage = img.copyResize(
+        image,
+        width: inputSize,
+        height: inputSize
+      );
+
+      //Matrix creation
+      var input = _buildInputTensor(resizedImage);
+
+      //create outpput tensor
+      var output = List.filled(1 * _labels!.length, 0.0).reshape([1, _labels!.length]);
+
+      //run inference
+      _interpreter!.run(input, output);
+
+      //interprete results
+      List<double> probabilities = List<double>.from(output[0]);
+      int maxIndex = 0;
+      double maxProb = 0.0;
+
+      for(int i=0; i< probabilities.length; i++) {
+        if(probabilities[i] > maxProb){
+          maxProb = probabilities[i];
+          maxIndex = i;
+        }
+      }
+
+      setState(() {
+        _result = "${_labels![maxIndex]} \n"
+        "Confidence: ${(maxProb * 100).toStringAsFixed(2)}%";
       });
 
     } catch (e) {
       setState(() {
-        _status = 'Error loading labels: $e';
+        _result = "Error: $e";
+      });
+    } finally {
+      setState(() {
+        _isAnalysing = false;
       });
     }
+
   }
+
+  //
+  List<List<List<List<double>>>> _buildInputTensor(img.Image image){
+    return List.generate(1, (_){
+      return List.generate(inputSize, (y) {
+        return List.generate(inputSize, (x) {
+          final pixel = image.getPixel(x, y);
+
+          return [
+            pixel.g.toDouble(),
+            pixel.b.toDouble(),
+            pixel.r.toDouble(),
+          ];
+        });
+      }); 
+    });
+  }        
 
   @override
   void dispose() {
@@ -99,18 +189,50 @@ class _MushroomInitializerState extends State<MushroomInitializer> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Load model and labels')),
+      appBar: AppBar(
+        title: const Text('🍄Mushroom Classifier')
+      ),
       body: Center(
-        child: Padding(
-          padding: const EdgeInsets.all(20.0),
-          child: Text(
-            _status,
-            textAlign: TextAlign.center,
-            style: const TextStyle(
-              fontSize: 20,
-              fontWeight: FontWeight.bold
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            if (_image != null) 
+              Image.file(_image!, height:300)
+            else 
+              const Icon(Icons.image, size:100, color: Colors.grey),
+            
+            const SizedBox(height: 20),
+
+            Text(
+              _result,
+              style: const TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.bold
+              ),
+              textAlign: TextAlign.center,
             ),
-          ),
+
+            if (_isAnalysing) const CircularProgressIndicator(),
+
+            const SizedBox(height: 30),
+            
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: [
+                ElevatedButton.icon(
+                  onPressed: () => _pickImage(ImageSource.camera), 
+                  icon: const Icon(Icons.camera_alt),
+                  label: const Text("Camera")
+                ),
+
+                ElevatedButton.icon(
+                  onPressed: () => _pickImage(ImageSource.gallery), 
+                  icon: const Icon(Icons.photo),
+                  label: const Text("Gallery")
+                )
+              ],
+            )
+          ],
         ),
       ),
     );
